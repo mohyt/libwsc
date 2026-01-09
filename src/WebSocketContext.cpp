@@ -577,12 +577,14 @@ void WebSocketContext::handleEvent(bufferevent* bev, short events) {
     }
 
     if (events & BEV_EVENT_CONNECTED) {
-        log_debug("TCP connection established");
+        log_debug("BEV_EVENT_CONNECTED: TCP connection established to %s:%d", _cfg.host.c_str(), _cfg.port);
 
         if (_cfg.secure) {
 #ifdef USE_TLS
+            log_debug("BEV_EVENT_CONNECTED: Verifying TLS handshake");
             SSL* ssl = bufferevent_openssl_get_ssl(bev);
             if (!ssl) {
+                log_error("BEV_EVENT_CONNECTED: SSL object not found after TLS connection");
                 sendError(ErrorCode::TLS_INIT_FAILED, "SSL object not found");
                 requestLoopExit();
                 return;
@@ -592,23 +594,28 @@ void WebSocketContext::handleEvent(bufferevent* bev, short events) {
             if (!_cfg.tls.isPeerVerifyDisabled()) {
                 if (verifyResult != X509_V_OK) {
                     const char* errStr = X509_verify_cert_error_string(verifyResult);
+                    log_error("BEV_EVENT_CONNECTED: TLS certificate verification failed: %s", errStr);
                     sendError(ErrorCode::SSL_HANDSHAKE_FAILED, std::string("TLS certificate error: ") + errStr);
                     requestLoopExit();
                     return;
                 }
-                
+
                 if (!_cfg.tls.disableHostnameValidation) {
                     // Hostname check is already set via X509_VERIFY_PARAM_set1_host
-                    log_debug("Hostname verification succeeded (via OpenSSL)");
+                    log_debug("BEV_EVENT_CONNECTED: Hostname verification succeeded (via OpenSSL)");
                 } else {
-                    log_debug("Hostname verification disabled by config");
+                    log_debug("BEV_EVENT_CONNECTED: Hostname verification disabled by config");
                 }
             } else {
-                log_debug("Peer certificate verification disabled by config");
+                log_debug("BEV_EVENT_CONNECTED: Peer certificate verification disabled by config");
             }
-#endif            
+            log_debug("BEV_EVENT_CONNECTED: TLS handshake completed successfully");
+#endif
+        } else {
+            log_debug("BEV_EVENT_CONNECTED: Non-secure (plain TCP) connection established");
         }
 
+        log_debug("BEV_EVENT_CONNECTED: Initiating WebSocket upgrade handshake");
         sendHandshakeRequest();
         return;
     }
@@ -618,14 +625,20 @@ void WebSocketContext::handleRead(bufferevent* bev) {
     auto input = bufferevent_get_input(bev);
 
     if (!upgraded.load()) {
+        log_debug("handleRead: Processing WebSocket upgrade response");
 
         const size_t len = evbuffer_get_length(input);
-        if (len < 4) return;
+        log_debug("handleRead: Input buffer length: %zu bytes", len);
+
+        if (len < 4) {
+            log_debug("handleRead: Not enough data yet (need at least 4 bytes)");
+            return;
+        }
 
         std::vector<char> snap(len);
         evbuffer_copyout(input, snap.data(), len);
         const char* b = snap.data();
-            
+
         // Find end of headers: "\r\n\r\n" (length-bounded)
         size_t headerBytes = 0;
         for (size_t i = 0; i + 3 < len; ++i) {
@@ -634,21 +647,28 @@ void WebSocketContext::handleRead(bufferevent* bev) {
                 break;
             }
         }
-        if (headerBytes == 0) return;
-        std::string resp(b, headerBytes);
+        if (headerBytes == 0) {
+            log_debug("handleRead: Headers not complete yet (waiting for \\r\\n\\r\\n)");
+            return;
+        }
 
-        //log_debug("RESP: %s", resp.c_str());
+        std::string resp(b, headerBytes);
+        log_debug("handleRead: Received HTTP response (%zu header bytes)", headerBytes);
+        log_debug("UPGRADE RESPONSE HEADERS:\n%s", resp.c_str());
 
         if (resp.find("HTTP/1.1 101", 0) == std::string::npos ||
             !containsHeader(resp, "Sec-WebSocket-Accept:"))
         {
-            log_error("WebSocket upgrade failed");
+            log_error("WebSocket upgrade failed - Missing 'HTTP/1.1 101' or 'Sec-WebSocket-Accept' header");
+            log_error("Response was: %s", resp.c_str());
             connection_state.store(ConnectionState::FAILED, std::memory_order_release);
             sendError(ErrorCode::CONNECT_FAILED, "WebSocket upgrade failed");
             evbuffer_drain(input, len);
             requestLoopExit();
             return;
         }
+
+        log_debug("handleRead: Upgrade response validation passed (101 Switching Protocols received)");
 
         bool negotiated = false;
         
@@ -717,15 +737,20 @@ void WebSocketContext::handleRead(bufferevent* bev) {
         }
 
         // Drain HTTP headers only (leave any WS frames)
+        log_debug("handleRead: Draining %zu HTTP header bytes from input buffer", headerBytes);
         evbuffer_drain(input, headerBytes);
+
+        log_debug("handleRead: Marking connection as upgraded");
         upgraded.store(true);
 
+        log_debug("handleRead: Setting connection state to CONNECTED");
         connection_state.store(ConnectionState::CONNECTED, std::memory_order_release);
 
         // Send Pending Queue
         log_debug("Flushing %zu queued messages…", send_queue.size());
         flushSendQueue();
 
+        log_debug("handleRead: Invoking on_open callback");
         OpenCallback cb;
         {
             std::lock_guard<std::mutex> lock(cb_mutex);
@@ -733,19 +758,25 @@ void WebSocketContext::handleRead(bufferevent* bev) {
         }
         if (cb) {
             cb();
+        } else {
+            log_debug("handleRead: No on_open callback set");
         }
 
         log_debug("WebSocket connection upgraded successfully");
 
         if (timeout_event) {
+            log_debug("handleRead: Canceling connection timeout timer");
             event_del(timeout_event);
             event_free(timeout_event);
             timeout_event = nullptr;
         }
 
-        if (evbuffer_get_length(input) > 0) {
-            //log_debug("Processing leftover frame data after upgrade");
+        const size_t remaining = evbuffer_get_length(input);
+        if (remaining > 0) {
+            log_debug("Processing %zu bytes of leftover frame data after upgrade", remaining);
             receiver.onData(input);
+        } else {
+            log_debug("handleRead: No leftover data after upgrade, ready for WebSocket frames");
         }
 
         return;
@@ -797,7 +828,7 @@ void WebSocketContext::flushSendQueue() {
 
 void WebSocketContext::sendHandshakeRequest() {
     if (!_bev) return;
-    log_debug("Sending WebSocket handshake request");
+    log_debug("Sending WebSocket handshake request to %s:%d%s", _cfg.host.c_str(), _cfg.port, _cfg.uri.c_str());
 
     auto out = bufferevent_get_output(_bev);
 
@@ -809,18 +840,21 @@ void WebSocketContext::sendHandshakeRequest() {
     evbuffer_add_printf(out, "Sec-WebSocket-Version: 13\r\n");
 
     if (_cfg.compression_requested) {
+        log_debug("Requesting compression: permessage-deflate");
         evbuffer_add_printf(out, "Sec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover; server_no_context_takeover; client_max_window_bits=9\r\n");
     }
 
     evbuffer_add_printf(out, "Origin: http://%s:%d\r\n", _cfg.host.c_str(), _cfg.port);
-    
+
     if (!_cfg.headers.headers.empty()) {
+        log_debug("Adding %zu custom headers", _cfg.headers.headers.size());
         for (const auto& header : _cfg.headers.headers) {
             evbuffer_add_printf(out, "%s: %s\r\n", header.first.c_str(), header.second.c_str());
         }
     }
 
     evbuffer_add_printf(out, "\r\n");
+    log_debug("WebSocket handshake request sent successfully");
 
 }
 
