@@ -802,21 +802,21 @@ void WebSocketContext::sendHandshakeRequest() {
     auto out = bufferevent_get_output(_bev);
 
     evbuffer_add_printf(out, "GET %s HTTP/1.1\r\n", _cfg.uri.c_str());
-    evbuffer_add_printf(out, "Host:%s:%d\r\n", _cfg.host.c_str(), _cfg.port);
-    evbuffer_add_printf(out, "Upgrade:websocket\r\n");
-    evbuffer_add_printf(out, "Connection:upgrade\r\n");
-    evbuffer_add_printf(out, "Sec-WebSocket-Key:%s\r\n", key.c_str());
-    evbuffer_add_printf(out, "Sec-WebSocket-Version:13\r\n");
-    
+    evbuffer_add_printf(out, "Host: %s:%d\r\n", _cfg.host.c_str(), _cfg.port);
+    evbuffer_add_printf(out, "Upgrade: websocket\r\n");
+    evbuffer_add_printf(out, "Connection: Upgrade\r\n");
+    evbuffer_add_printf(out, "Sec-WebSocket-Key: %s\r\n", key.c_str());
+    evbuffer_add_printf(out, "Sec-WebSocket-Version: 13\r\n");
+
     if (_cfg.compression_requested) {
-        evbuffer_add_printf(out, "Sec-WebSocket-Extensions:permessage-deflate; client_no_context_takeover; server_no_context_takeover; client_max_window_bits=9\r\n");
+        evbuffer_add_printf(out, "Sec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover; server_no_context_takeover; client_max_window_bits=9\r\n");
     }
 
-    evbuffer_add_printf(out, "Origin:http://%s:%d\r\n", _cfg.host.c_str(), _cfg.port);
+    evbuffer_add_printf(out, "Origin: http://%s:%d\r\n", _cfg.host.c_str(), _cfg.port);
     
     if (!_cfg.headers.headers.empty()) {
         for (const auto& header : _cfg.headers.headers) {
-            evbuffer_add_printf(out, "%s:%s\r\n", header.first.c_str(), header.second.c_str());
+            evbuffer_add_printf(out, "%s: %s\r\n", header.first.c_str(), header.second.c_str());
         }
     }
 
