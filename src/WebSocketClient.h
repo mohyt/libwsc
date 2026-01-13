@@ -239,12 +239,12 @@ public:
 private:
     // Connection properties
     std::string host;
-    unsigned short port;
+    unsigned short port = 0;
     std::string uri;
-    bool secure;
-    bool is_ip_address;
+    bool secure = false;
+    bool is_ip_address = false;
     unsigned int ping_interval = 0;
-    unsigned int connection_timeout = 1;
+    unsigned int connection_timeout = 10;  // Increased to 10 seconds for ngrok/proxy connections
     bool compression_requested = true;
 
     static bool isHostIPAddress(const std::string& host);

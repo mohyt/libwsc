@@ -551,7 +551,8 @@ void WebSocketContext::handleEvent(bufferevent* bev, short events) {
         if (events & BEV_EVENT_EOF) {
             if (!ws_open) {
                 // TCP closed before upgrade completed
-                log_debug("EOF during handshake");
+                log_error("MMMMMM EOF during handshake - server closed connection before WebSocket upgrade");
+                log_error("MMMMMM ws_open=%d, upgraded=%d", ws_open, upgraded.load());
                 sendError(ErrorCode::CONNECT_FAILED, "Connection closed during handshake (EOF)");
 
                 {
@@ -653,14 +654,14 @@ void WebSocketContext::handleRead(bufferevent* bev) {
         }
 
         std::string resp(b, headerBytes);
-        log_debug("handleRead: Received HTTP response (%zu header bytes)", headerBytes);
-        log_debug("UPGRADE RESPONSE HEADERS:\n%s", resp.c_str());
+        log_error("MMMMMM handleRead: Received HTTP response (%zu header bytes)", headerBytes);
+        log_error("MMMMMM UPGRADE RESPONSE HEADERS:\n%s", resp.c_str());
 
         if (resp.find("HTTP/1.1 101", 0) == std::string::npos ||
             !containsHeader(resp, "Sec-WebSocket-Accept:"))
         {
-            log_error("WebSocket upgrade failed - Missing 'HTTP/1.1 101' or 'Sec-WebSocket-Accept' header");
-            log_error("Response was: %s", resp.c_str());
+            log_error("MMMMMM WebSocket upgrade failed - Missing 'HTTP/1.1 101' or 'Sec-WebSocket-Accept' header");
+            log_error("MMMMMM Response was: %s", resp.c_str());
             connection_state.store(ConnectionState::FAILED, std::memory_order_release);
             sendError(ErrorCode::CONNECT_FAILED, "WebSocket upgrade failed");
             evbuffer_drain(input, len);
@@ -668,7 +669,7 @@ void WebSocketContext::handleRead(bufferevent* bev) {
             return;
         }
 
-        log_debug("handleRead: Upgrade response validation passed (101 Switching Protocols received)");
+        log_error("MMMMMM handleRead: Upgrade response validation passed (101 Switching Protocols received)!");
 
         bool negotiated = false;
         
@@ -828,33 +829,58 @@ void WebSocketContext::flushSendQueue() {
 
 void WebSocketContext::sendHandshakeRequest() {
     if (!_bev) return;
-    log_debug("Sending WebSocket handshake request to %s:%d%s", _cfg.host.c_str(), _cfg.port, _cfg.uri.c_str());
+    log_error("MMMMMM Sending WebSocket handshake request to %s:%d%s", _cfg.host.c_str(), _cfg.port, _cfg.uri.c_str());
 
     auto out = bufferevent_get_output(_bev);
 
+    // Omit default ports (80 for http, 443 for https) from Host and Origin headers
+    bool is_default_port = (_cfg.secure && _cfg.port == 443) || (!_cfg.secure && _cfg.port == 80);
+    const char* origin_scheme = _cfg.secure ? "https" : "http";
+
     evbuffer_add_printf(out, "GET %s HTTP/1.1\r\n", _cfg.uri.c_str());
-    evbuffer_add_printf(out, "Host: %s:%d\r\n", _cfg.host.c_str(), _cfg.port);
+    log_error("MMMMMM   GET %s HTTP/1.1", _cfg.uri.c_str());
+
+    if (is_default_port) {
+        evbuffer_add_printf(out, "Host: %s\r\n", _cfg.host.c_str());
+        log_error("MMMMMM   Host: %s (port omitted - default)", _cfg.host.c_str());
+    } else {
+        evbuffer_add_printf(out, "Host: %s:%d\r\n", _cfg.host.c_str(), _cfg.port);
+        log_error("MMMMMM   Host: %s:%d", _cfg.host.c_str(), _cfg.port);
+    }
     evbuffer_add_printf(out, "Upgrade: websocket\r\n");
-    evbuffer_add_printf(out, "Connection: Upgrade\r\n");
+    log_error("MMMMMM   Upgrade: websocket");
+    evbuffer_add_printf(out, "Connection: upgrade\r\n");
+    log_error("MMMMMM   Connection: upgrade");
     evbuffer_add_printf(out, "Sec-WebSocket-Key: %s\r\n", key.c_str());
+    log_error("MMMMMM   Sec-WebSocket-Key: %s", key.c_str());
     evbuffer_add_printf(out, "Sec-WebSocket-Version: 13\r\n");
+    log_error("MMMMMM   Sec-WebSocket-Version: 13");
 
     if (_cfg.compression_requested) {
-        log_debug("Requesting compression: permessage-deflate");
+        log_error("MMMMMM Requesting compression: permessage-deflate");
         evbuffer_add_printf(out, "Sec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover; server_no_context_takeover; client_max_window_bits=9\r\n");
+        log_error("MMMMMM   Sec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover; server_no_context_takeover; client_max_window_bits=9");
     }
 
-    evbuffer_add_printf(out, "Origin: http://%s:%d\r\n", _cfg.host.c_str(), _cfg.port);
+    log_error("MMMMMM   _cfg.secure=%d, will use origin_scheme=%s", _cfg.secure, origin_scheme);
+    if (is_default_port) {
+        evbuffer_add_printf(out, "Origin: %s://%s\r\n", origin_scheme, _cfg.host.c_str());
+        log_error("MMMMMM   Origin: %s://%s (port omitted - default)", origin_scheme, _cfg.host.c_str());
+    } else {
+        evbuffer_add_printf(out, "Origin: %s://%s:%d\r\n", origin_scheme, _cfg.host.c_str(), _cfg.port);
+        log_error("MMMMMM   Origin: %s://%s:%d", origin_scheme, _cfg.host.c_str(), _cfg.port);
+    }
 
     if (!_cfg.headers.headers.empty()) {
-        log_debug("Adding %zu custom headers", _cfg.headers.headers.size());
+        log_error("MMMMMM Adding %zu custom headers", _cfg.headers.headers.size());
         for (const auto& header : _cfg.headers.headers) {
             evbuffer_add_printf(out, "%s: %s\r\n", header.first.c_str(), header.second.c_str());
+            log_error("MMMMMM   %s: %s", header.first.c_str(), header.second.c_str());
         }
     }
 
     evbuffer_add_printf(out, "\r\n");
-    log_debug("WebSocket handshake request sent successfully");
+    log_error("MMMMMM WebSocket handshake request sent successfully");
 
 }
 

@@ -6,6 +6,7 @@
 
 #include "WebSocketClient.h"
 #include "WebSocketContext.h"
+#include "Logger.h"
 
 #include <arpa/inet.h>
 #include <iomanip>
@@ -27,14 +28,19 @@ void WebSocketClient::setUrl(const std::string& url) {
     const std::string ws_scheme = "ws://";
     const std::string wss_scheme = "wss://";
 
+    log_error("MMMMMM setUrl called with url: %s", url.c_str());
+
     size_t pos = 0;
     if (url.compare(0, ws_scheme.size(), ws_scheme) == 0) {
         secure = false;
+        log_error("MMMMMM Detected ws:// scheme, setting secure=false");
         pos = ws_scheme.size();
     } else if (url.compare(0, wss_scheme.size(), wss_scheme) == 0) {
         secure = true;
+        log_error("MMMMMM Detected wss:// scheme, setting secure=true");
         pos = wss_scheme.size();
     } else {
+        log_error("MMMMMM ERROR: URL does not start with ws:// or wss://, returning");
         return;
     }
 
@@ -146,11 +152,14 @@ void WebSocketClient::connect() {
         return;
     }
 
+    log_error("MMMMMM WebSocketClient::connect() - secure=%d, host=%s, port=%d, uri=%s", secure, host.c_str(), port, uri.c_str());
+
     WebSocketContext::Config cfg;
     cfg.host = host;
     cfg.port = port;
     cfg.uri = uri;
     cfg.secure = secure;
+    log_error("MMMMMM WebSocketClient::connect() - cfg.secure=%d (copied from secure)", cfg.secure);
     cfg.is_ip_address = is_ip_address;
     cfg.ping_interval = ping_interval;
     cfg.connection_timeout = connection_timeout;
